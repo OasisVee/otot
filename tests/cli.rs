@@ -142,7 +142,6 @@ mod classify_input_tests {
     }
     // Rule 3: Localhost with Port (Known to fail with current implementation)
     #[test]
-    #[ignore] // Remove this when Rule 3 is implemented
     fn localhost_with_port_should_be_full_url() {
         let result = classify_input("localhost:8080");
 
