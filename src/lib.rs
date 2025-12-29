@@ -31,8 +31,8 @@ pub fn classify_input(address: &str) -> InputType {
     InputType::FuzzyPattern(
         address
             .split('/')
-            .map(String::from)
             .filter(|s| !s.is_empty())
+            .map(String::from)
             .collect(),
     )
 }
