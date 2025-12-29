@@ -196,7 +196,6 @@ mod classify_input_tests {
         }
     }
     #[test]
-    #[ignore] // Remove this when empty segment filtering is implemented
     fn fuzzy_pattern_filters_empty_segments() {
         let result = classify_input("github//rust");
 
@@ -208,7 +207,6 @@ mod classify_input_tests {
         }
     }
     #[test]
-    #[ignore] // Remove this when empty segment filtering is implemented
     fn fuzzy_pattern_discards_leading_slash() {
         let result = classify_input("/github/rust");
 
@@ -220,7 +218,6 @@ mod classify_input_tests {
         }
     }
     #[test]
-    #[ignore] // Remove this when empty segment filtering is implemented
     fn fuzzy_pattern_discards_trailing_slash() {
         let result = classify_input("github/rust/");
 
