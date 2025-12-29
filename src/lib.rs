@@ -32,7 +32,7 @@ pub fn classify_input(address: &str) -> InputType {
         address
             .split('/')
             .filter(|s| !s.is_empty())
-            .map(String::from)
+            .map(|s| s.to_lowercase())
             .collect(),
     )
 }

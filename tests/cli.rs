@@ -229,7 +229,6 @@ mod classify_input_tests {
         }
     }
     #[test]
-    #[ignore] // Remove this when lowercase normalization is implemented
     fn fuzzy_pattern_normalizes_to_lowercase() {
         let result = classify_input("GitHub/Rust/Issues");
 
