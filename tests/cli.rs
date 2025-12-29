@@ -158,13 +158,12 @@ mod classify_input_tests {
         }
     }
     #[test]
-    #[ignore] // Remove this when Rule 3 is implemented
     fn ip_address_with_port_should_be_full_url() {
         let result = classify_input("192.168.1.1:3000/api");
 
         match result {
             InputType::FullUrl(url) => {
-                assert_eq!(url.scheme(), "https");
+                assert_eq!(url.scheme(), "http");
                 assert_eq!(url.host_str(), Some("192.168.1.1"));
                 assert_eq!(url.port(), Some(3000));
                 assert_eq!(url.path(), "/api");
