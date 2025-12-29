@@ -8,7 +8,7 @@ use zurl::{InputType, classify_input};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ZurlConfig {
-    preferred_browser: String,
+    preferred_browser: Option<String>,
 }
 
 #[derive(Parser)]
@@ -35,10 +35,9 @@ fn main() -> Result<()> {
     match parsed {
         InputType::FullUrl(url) => {
             info!("Parsed FullUrl {:?}, opening directly", &url);
-            if cfg.preferred_browser.is_empty() {
-                open::that(url.as_str())?;
-            } else {
-                open::with(url.as_str(), cfg.preferred_browser)?;
+            match cfg.preferred_browser {
+                Some(browser) => open::with(url.as_str(), browser)?,
+                None => open::that(url.as_str())?,
             }
         }
         InputType::FuzzyPattern(_segments) => {
