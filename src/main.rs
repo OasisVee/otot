@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use confy;
 use log::info;
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
         .filter_level(args.verbosity.into())
         .init();
 
-    let cfg: ZurlConfig = confy::load("zurl", None)?;
+    let cfg: ZurlConfig = confy::load("zurl", None).context("Failed to load configuration")?;
 
     if args.address.is_empty() {
         anyhow::bail!("provided address must be a non-empty string");
