@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use log::info;
+use open;
 use zurl::{InputType, classify_input};
 
 #[derive(Parser)]
@@ -25,6 +26,7 @@ fn main() -> Result<()> {
     match parsed {
         InputType::FullUrl(url) => {
             info!("Parsed FullUrl {:?}, opening directly", &url);
+            open::that(url.as_str())?;
         }
         InputType::FuzzyPattern(_segments) => {
             anyhow::bail!("Opening links from a fuzzy pattern is not implemented yet!")
