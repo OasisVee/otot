@@ -48,6 +48,19 @@ pub enum ConfigAction {
     Path,
 }
 
+fn open_url(url: &str, browser: Option<&str>) -> std::io::Result<()> {
+    match browser {
+        Some(b) => {
+            debug!("Opening link with {:?}", &b);
+            open::with(url, b)
+        }
+        None => {
+            debug!("Opening link with default browser");
+            open::that(url)
+        }
+    }
+}
+
 pub fn handle_open(address: &str, preferred_browser: Option<&str>) -> anyhow::Result<()> {
     if address.is_empty() {
         anyhow::bail!("provided address must be a non-empty string");
@@ -57,15 +70,10 @@ pub fn handle_open(address: &str, preferred_browser: Option<&str>) -> anyhow::Re
     match parsed {
         InputType::FullUrl(url) => {
             debug!("Parsed FullUrl {:?}", &url);
-            match preferred_browser {
-                Some(browser) => {
-                    debug!("Opening link with {:?}", &browser);
-                    open::with(url.as_str(), browser)?
-                }
-                None => open::that(url.as_str())?,
-            }
+            open_url(&url.as_str(), preferred_browser)?;
         }
-        InputType::FuzzyPattern(_segments) => {
+        InputType::FuzzyPattern(segments) => {
+            debug!("Parsed FuzzyPattern {:?}", &segments);
             anyhow::bail!("Opening links from a fuzzy pattern is not implemented yet!")
         }
     }
