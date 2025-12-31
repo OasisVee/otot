@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use confy;
 use serde::{Deserialize, Serialize};
@@ -27,36 +27,6 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
-}
-
-struct App {
-    config: ZurlConfig,
-    // Box gives us a fixed-size pointer to the dynamic function
-    // compiler needs to know the size of this struct, so we can't use the dynamic function without wrapping
-    opener: Box<dyn Fn(&str, Option<&str>) -> std::io::Result<()>>,
-    // db connection, etc.
-}
-
-impl App {
-    fn builder() -> AppBuilder {
-        AppBuilder::default()
-    }
-
-    fn new() -> Result<Self> {
-        Self::builder().build()
-    }
-
-    fn handle_open(&self, address: &str) -> Result<()> {
-        open_address_impl(
-            &*self.opener,
-            address,
-            self.config.preferred_browser.as_deref(),
-        )
-    }
-
-    fn handle_config(&self, action: ConfigAction) -> Result<()> {
-        handle_config_action(action)
-    }
 }
 
 #[derive(Default)]
@@ -90,6 +60,36 @@ impl AppBuilder {
     }
 }
 
+struct App {
+    config: ZurlConfig,
+    // Box gives us a fixed-size pointer to the dynamic function
+    // compiler needs to know the size of this struct, so we can't use the dynamic function without wrapping
+    opener: Box<dyn Fn(&str, Option<&str>) -> std::io::Result<()>>,
+    // db connection, etc.
+}
+
+impl App {
+    fn builder() -> AppBuilder {
+        AppBuilder::default()
+    }
+
+    fn new() -> Result<Self> {
+        Self::builder().build()
+    }
+
+    fn handle_open(&self, address: &str) -> Result<()> {
+        open_address_impl(
+            &*self.opener,
+            address,
+            self.config.preferred_browser.as_deref(),
+        )
+    }
+
+    fn handle_config(&self, action: ConfigAction) -> Result<()> {
+        handle_config_action(action)
+    }
+}
+
 fn main() -> Result<()> {
     let args = Cli::parse();
 
@@ -105,4 +105,60 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    #[test]
+    fn app_opens_url_with_mock_opener() {
+        let captured = Rc::new(RefCell::new(None));
+        let captured_clone = captured.clone();
+        let mock_opener = move |url: &str, browser: Option<&str>| {
+            *captured_clone.borrow_mut() = Some((url.to_string(), browser.map(String::from)));
+            Ok(())
+        };
+        let app = AppBuilder::default()
+            .with_opener(mock_opener)
+            .build()
+            .unwrap();
+        app.handle_open("github.com").unwrap();
+        assert_eq!(
+            *captured.borrow(),
+            Some(("https://github.com/".to_string(), None))
+        );
+    }
+    #[test]
+    fn app_uses_preferred_browser_from_config() {
+        let captured = Rc::new(RefCell::new(None));
+        let captured_clone = captured.clone();
+        let mock_opener = move |url: &str, browser: Option<&str>| {
+            *captured_clone.borrow_mut() = Some((url.to_string(), browser.map(String::from)));
+            Ok(())
+        };
+        let config = ZurlConfig {
+            preferred_browser: Some("firefox".to_string()),
+        };
+
+        let app = AppBuilder::default()
+            .with_config(config)
+            .with_opener(mock_opener)
+            .build()
+            .unwrap();
+        app.handle_open("github.com").unwrap();
+        assert_eq!(
+            *captured.borrow(),
+            Some((
+                "https://github.com/".to_string(),
+                Some("firefox".to_string())
+            ))
+        );
+    }
+    #[test]
+    fn app_builder_uses_defaults_when_not_specified() {
+        let result = AppBuilder::default().build();
+        assert!(result.is_ok());
+    }
 }
