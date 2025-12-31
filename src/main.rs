@@ -31,17 +31,19 @@ enum Command {
 
 struct App {
     config: ZurlConfig,
+    // Box gives us a fixed-size pointer to the dynamic function
+    // compiler needs to know the size of this struct, so we can't use the dynamic function without wrapping
     opener: Box<dyn Fn(&str, Option<&str>) -> std::io::Result<()>>,
     // db connection, etc.
 }
 
 impl App {
+    fn builder() -> AppBuilder {
+        AppBuilder::default()
+    }
+
     fn new() -> Result<Self> {
-        let config = confy::load("zurl", None).context("Failed to load configuration")?;
-        Ok(Self {
-            config,
-            opener: Box::new(open_url),
-        })
+        Self::builder().build()
     }
 
     fn handle_open(&self, address: &str) -> Result<()> {
@@ -54,6 +56,37 @@ impl App {
 
     fn handle_config(&self, action: ConfigAction) -> Result<()> {
         handle_config_action(action)
+    }
+}
+
+#[derive(Default)]
+struct AppBuilder {
+    config: Option<ZurlConfig>,
+    opener: Option<Box<dyn Fn(&str, Option<&str>) -> std::io::Result<()>>>,
+}
+
+impl AppBuilder {
+    fn with_config(mut self, config: ZurlConfig) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    fn with_opener<F>(mut self, opener: F) -> Self
+    where
+        F: Fn(&str, Option<&str>) -> std::io::Result<()> + 'static,
+    {
+        self.opener = Some(Box::new(opener));
+        self
+    }
+
+    fn build(self) -> Result<App> {
+        let config = self.config.unwrap_or_else(|| {
+            confy::load("zurl", None).expect("Failed to load config in builder")
+        });
+
+        let opener = self.opener.unwrap_or_else(|| Box::new(open_url));
+
+        Ok(App { config, opener })
     }
 }
 
