@@ -115,6 +115,8 @@ mod tests {
     fn to_strings(slice: &[&str]) -> Vec<String> {
         slice.iter().map(|s| s.to_string()).collect()
     }
+    // does_pattern_match_segments
+
     // Category 1: First Segment Rule
     #[test]
     fn first_segment_matches() {
@@ -216,5 +218,84 @@ mod tests {
         let url_segments: Vec<String> = vec![];
         let pattern = to_strings(&["github"]);
         assert!(!does_pattern_match_segments(&url_segments, &pattern));
+    }
+
+    // extract_segments
+
+    // Category 1: Basic URL Parsing
+    #[test]
+    fn extract_segments_simple_url_with_path() {
+        let result = extract_segments("https://github.com/rust-lang/rust").unwrap();
+        assert_eq!(result, vec!["rust-lang", "rust"]);
+    }
+    #[test]
+    fn extract_segments_multiple_path_segments() {
+        let result =
+            extract_segments("https://github.com/microsoft/typescript/issues/123").unwrap();
+        assert_eq!(result, vec!["microsoft", "typescript", "issues", "123"]);
+    }
+    #[test]
+    fn extract_segments_root_only_no_path() {
+        let result = extract_segments("https://github.com").unwrap();
+        assert_eq!(result, Vec::<String>::new());
+    }
+    #[test]
+    fn extract_segments_trailing_slash() {
+        let result = extract_segments("https://github.com/rust-lang/rust/").unwrap();
+        assert_eq!(result, vec!["rust-lang", "rust"]);
+    }
+    // Category 2: Case Normalization
+    #[test]
+    fn extract_segments_mixed_case_normalized() {
+        let result = extract_segments("https://GitHub.COM/Rust-Lang/RUST").unwrap();
+        assert_eq!(result, vec!["rust-lang", "rust"]);
+    }
+    #[test]
+    fn extract_segments_already_lowercase() {
+        let result = extract_segments("https://github.com/rust-lang/rust").unwrap();
+        assert_eq!(result, vec!["rust-lang", "rust"]);
+    }
+    // Category 3: Query Parameters and Fragments
+    #[test]
+    fn extract_segments_with_query_parameters() {
+        let result = extract_segments("https://github.com/search?q=rust").unwrap();
+        assert_eq!(result, vec!["search"]);
+    }
+    #[test]
+    fn extract_segments_with_fragment() {
+        let result = extract_segments("https://github.com/rust-lang/rust#readme").unwrap();
+        assert_eq!(result, vec!["rust-lang", "rust"]);
+    }
+    #[test]
+    fn extract_segments_with_query_and_fragment() {
+        let result = extract_segments("https://github.com/search?q=rust#results").unwrap();
+        assert_eq!(result, vec!["search"]);
+    }
+    // Category 4: Different Schemes
+    #[test]
+    fn extract_segments_http_scheme() {
+        let result = extract_segments("http://example.com/foo/bar").unwrap();
+        assert_eq!(result, vec!["foo", "bar"]);
+    }
+    #[test]
+    fn extract_segments_https_scheme() {
+        let result = extract_segments("https://example.com/foo/bar").unwrap();
+        assert_eq!(result, vec!["foo", "bar"]);
+    }
+    // Category 5: Error Cases
+    #[test]
+    fn extract_segments_invalid_url() {
+        let result = extract_segments("not-a-valid-url");
+        assert!(result.is_err());
+    }
+    #[test]
+    fn extract_segments_empty_string() {
+        let result = extract_segments("");
+        assert!(result.is_err());
+    }
+    #[test]
+    fn extract_segments_no_scheme() {
+        let result = extract_segments("github.com/rust-lang/rust");
+        assert!(result.is_err());
     }
 }
