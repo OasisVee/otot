@@ -53,3 +53,57 @@ impl SqliteDatabase {
         Ok(app_dir.join("history.db"))
     }
 }
+
+fn extract_segments(url_str: &str) -> Result<Vec<String>> {
+    let url = Url::parse(url_str).context("Failed to parse URL")?;
+
+    let segments: Vec<String> = url
+        .path_segments()
+        .map(|segments| {
+            segments
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(segments)
+}
+
+fn get_last_segment(segments: &[String]) -> Option<String> {
+    segments.last().cloned()
+}
+
+fn segments_match_pattern(url_segments: &[String], pattern: &[String]) -> bool {
+    if pattern.is_empty() {
+        return true;
+    }
+
+    if let (Some(pattern_first), Some(url_first)) = (pattern.first(), url_segments.first()) {
+        if pattern_first != url_first {
+            return false;
+        }
+    }
+
+    if let (Some(pattern_last), Some(url_last)) = (pattern.last(), url_segments.last()) {
+        if pattern_last != url_last {
+            return false;
+        }
+    }
+
+    let mut url_idx = 0;
+    for pattern_seg in pattern {
+        let found = url_segments[url_idx..]
+            .iter()
+            .position(|url_seg| url_seg == pattern_seg);
+
+        match found {
+            Some(offset) => {
+                url_idx += offset + 1;
+            }
+            None => return false,
+        }
+    }
+
+    true
+}
