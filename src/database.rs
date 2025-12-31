@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
+use serde_json;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use url::Url;
@@ -51,6 +52,24 @@ impl SqliteDatabase {
         std::fs::create_dir_all(&app_dir).context("Failed to create application directory")?;
 
         Ok(app_dir.join("history.db"))
+    }
+
+    fn add_visit(&mut self, url: &str, timestamp: SystemTime) -> Result<()> {
+        let segments = extract_segments(url)?;
+        let last_segment = get_last_segment(&segments).unwrap_or_default();
+        let segments_json = serde_json::to_string(&segments)?;
+        let timestamp_secs = timestamp.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
+
+        self.conn.execute(
+            "INSERT INTO urls (full_url, segments, last_segment, score, last_accessed)
+                  VALUES (?1, ?2, ?3, 1.0, ?4)
+                  ON CONFLICT(full_url) DO UPDATE SET
+                      score = score + 1.0,
+                      last_accessed = excluded.last_accessed",
+            params![url, segments_json, last_segment, timestamp_secs],
+        )?;
+
+        Ok(())
     }
 }
 
