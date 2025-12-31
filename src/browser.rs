@@ -1,7 +1,9 @@
 use anyhow::Result;
 use log::debug;
 use open;
+use std::time::SystemTime;
 
+use crate::database::Database;
 use crate::url_classify::{InputType, classify_input};
 
 pub trait BrowserOpener {
@@ -42,6 +44,7 @@ impl BrowserOpener for MockBrowserOpener {
 
 pub fn open_address_impl(
     opener: &dyn BrowserOpener,
+    db: &mut dyn Database,
     address: &str,
     preferred_browser: Option<&str>,
 ) -> Result<()> {
@@ -51,6 +54,7 @@ pub fn open_address_impl(
 
     match classify_input(address) {
         InputType::FullUrl(url) => {
+            db.add_visit(url.as_str(), SystemTime::now())?;
             opener.open(url.as_str(), preferred_browser)?;
             Ok(())
         }
