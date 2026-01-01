@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::debug;
+use log::{debug, info};
 use rusqlite::{Connection, params};
 use serde_json;
 use std::path::PathBuf;
@@ -65,7 +65,7 @@ impl Database for SqliteDatabase {
         let segments_json = serde_json::to_string(&segments)?;
         let timestamp_secs = timestamp.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
 
-        debug!("Recording history record for {:?}", url);
+        info!("Recording visit for {:?}", url);
 
         self.conn.execute(
             "INSERT INTO urls (full_url, segments, last_segment, score, last_accessed)
@@ -113,12 +113,24 @@ impl Database for SqliteDatabase {
 
             if does_pattern_match_segments(&url_segments, pattern) {
                 let frecency = calculate_frecency(score, last_accessed);
+                debug!(
+                    "Matched: {} (score: {}, frecency: {:.2})",
+                    url, score, frecency
+                );
                 matches.push((url, frecency));
             }
         }
 
         debug!("{:?} records matched on last segment", row_count);
-        debug!("{:?} records fully matched", matches.len());
+        if matches.is_empty() {
+            info!("No matches found for pattern {:?}", pattern);
+        } else {
+            info!(
+                "Found {} match(es) for pattern {:?}",
+                matches.len(),
+                pattern
+            );
+        }
 
         matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
 
