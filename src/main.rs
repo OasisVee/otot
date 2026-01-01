@@ -64,11 +64,10 @@ impl AppBuilder {
             None => confy::load("zurl", None).context("Failed to load config in builder")?,
         };
 
-        let opener = self.opener.unwrap_or_else(|| Box::new(SystemBrowserOpener));
-
-        let db = self
-            .db
-            .unwrap_or_else(|| Box::new(SqliteDatabase::open().expect("Failed to open database")));
+        // Options because these components aren't required for all subcommands (e.g. `zurl config` does not require either)
+        //  and we can skip the extra overhead from their initialization.
+        let opener = self.opener;
+        let db = self.db;
 
         Ok(App { config, opener, db })
     }
@@ -77,8 +76,9 @@ impl AppBuilder {
 struct App {
     config: ZurlConfig,
     // Box gives us a fixed-size pointer to the dynamic trait - compiler needs to know size
-    opener: Box<dyn BrowserOpener>,
-    db: Box<dyn Database>,
+    // These are Option so we can avoid initializing them for config commands
+    opener: Option<Box<dyn BrowserOpener>>,
+    db: Option<Box<dyn Database>>,
 }
 
 impl App {
@@ -91,9 +91,17 @@ impl App {
     }
 
     fn handle_open(&mut self, address: &str) -> Result<()> {
+        // Lazy initialization: only create opener and db when actually opening a URL
+        let opener = self
+            .opener
+            .get_or_insert_with(|| Box::new(SystemBrowserOpener));
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
         open_address_impl(
-            self.opener.as_ref(),
-            self.db.as_mut(),
+            opener.as_ref(),
+            db.as_mut(),
             address,
             self.config.preferred_browser.as_deref(),
         )
@@ -192,6 +200,7 @@ mod tests {
         let mut app = AppBuilder::default()
             .with_config(config)
             .with_opener(mock)
+            .with_db(MockDatabase)
             .build()
             .unwrap();
         app.handle_open("github.com").unwrap();
@@ -206,6 +215,23 @@ mod tests {
     #[test]
     fn app_builder_uses_defaults_when_not_specified() {
         let result = AppBuilder::default().build();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn config_commands_dont_initialize_db_or_opener() {
+        // Build an app without providing db or opener
+        let app = AppBuilder::default()
+            .with_config(ZurlConfig::default())
+            .build()
+            .unwrap();
+
+        // Verify that db and opener are None (not initialized)
+        assert!(app.db.is_none());
+        assert!(app.opener.is_none());
+
+        // Config commands should work fine without them
+        let result = app.handle_config(ConfigAction::Path);
         assert!(result.is_ok());
     }
 }
