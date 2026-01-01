@@ -494,7 +494,7 @@ mod tests {
             .unwrap();
 
         let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, vec!["rust-lang", "rust", "issues"]);
+        assert_eq!(segments, vec!["github", "rust-lang", "rust", "issues"]);
     }
     #[test]
     fn add_visit_stores_last_segment_correctly() {
@@ -532,7 +532,7 @@ mod tests {
             .unwrap();
 
         let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, vec!["rust-lang", "rust"]);
+        assert_eq!(segments, vec!["github", "rust-lang", "rust"]);
     }
     #[test]
     fn add_visit_handles_url_with_no_path() {
@@ -551,7 +551,7 @@ mod tests {
             .unwrap();
 
         let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, Vec::<String>::new());
+        assert_eq!(segments, vec!["github"]);
 
         let last_segment: String = db
             .conn
@@ -562,7 +562,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(last_segment, "");
+        assert_eq!(last_segment, "github");
     }
     #[test]
     fn add_visit_multiple_different_urls() {
