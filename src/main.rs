@@ -49,6 +49,15 @@ impl AppBuilder {
         self
     }
 
+    #[cfg(test)]
+    fn with_db<D>(mut self, db: D) -> Self
+    where
+        D: Database + 'static,
+    {
+        self.db = Some(Box::new(db));
+        self
+    }
+
     fn build(self) -> Result<App> {
         let config = match self.config {
             Some(c) => c,
@@ -129,20 +138,46 @@ mod tests {
         }
     }
 
+    struct MockDatabase;
+
+    impl Database for MockDatabase {
+        fn add_visit(
+            &mut self,
+            _url: &str,
+            _timestamp: std::time::SystemTime,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn fuzzy_match(&self, _pattern: &[String]) -> anyhow::Result<Vec<String>> {
+            Ok(vec![])
+        }
+
+        fn get_best_match(&self, _pattern: &[String]) -> anyhow::Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
     #[test]
     fn app_opens_url_with_mock_opener() {
         let captured = Rc::new(RefCell::new(None));
         let mock = MockBrowserOpener {
             captured: captured.clone(),
         };
+        let mut app = AppBuilder::default()
+            .with_config(ZurlConfig::default())
+            .with_opener(mock)
+            .with_db(MockDatabase)
+            .build()
+            .unwrap();
 
-        let mut app = AppBuilder::default().with_opener(mock).build().unwrap();
         app.handle_open("github.com").unwrap();
         assert_eq!(
             *captured.borrow(),
             Some(("https://github.com/".to_string(), None))
         );
     }
+
     #[test]
     fn app_uses_preferred_browser_from_config() {
         let captured = Rc::new(RefCell::new(None));
