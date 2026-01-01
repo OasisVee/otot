@@ -67,9 +67,10 @@ pub fn open_address_impl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::SqliteDatabase;
+    use assert_fs::TempDir;
     use std::cell::RefCell;
     use std::rc::Rc;
-
     fn create_mock() -> (
         MockBrowserOpener,
         Rc<RefCell<Option<(String, Option<String>)>>>,
@@ -81,45 +82,67 @@ mod tests {
         (mock, captured)
     }
 
+    fn create_temp_db() -> (TempDir, SqliteDatabase) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::open_at(&db_path).unwrap();
+        (temp_dir, db)
+    }
     #[test]
     fn empty_address_returns_error() {
         let (mock, _) = create_mock();
-        let result = open_address_impl(&mock, "", None);
-
+        let (_temp_dir, mut db) = create_temp_db();
+        let result = open_address_impl(&mock, &mut db, "", None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("non-empty"));
     }
+
     #[test]
     fn full_url_with_https_scheme_default_browser() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "https://github.com/rust-lang/rust", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "https://github.com/rust-lang/rust", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("https://github.com/rust-lang/rust".to_string(), None))
         );
     }
+
     #[test]
     fn domain_without_scheme_adds_https() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "github.com/rust-lang", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "github.com/rust-lang", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("https://github.com/rust-lang".to_string(), None))
         );
     }
+
     #[test]
     fn localhost_with_port_adds_http() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "localhost:8080/api", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "localhost:8080/api", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("http://localhost:8080/api".to_string(), None))
         );
     }
+
     #[test]
     fn full_url_with_preferred_browser() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "https://github.com", Some("firefox")).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "https://github.com", Some("firefox")).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some((
@@ -128,10 +151,14 @@ mod tests {
             ))
         );
     }
+
     #[test]
     fn domain_without_scheme_with_preferred_browser() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "github.com/rust", Some("safari")).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "github.com/rust", Some("safari")).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some((
@@ -140,41 +167,54 @@ mod tests {
             ))
         );
     }
+
     #[test]
     fn preserves_query_parameters() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "example.com/search?q=rust&page=2", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "example.com/search?q=rust&page=2", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("https://example.com/search?q=rust&page=2".to_string(), None))
         );
     }
+
     #[test]
     fn preserves_fragment() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "example.com/page#section", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "example.com/page#section", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("https://example.com/page#section".to_string(), None))
         );
     }
+
     #[test]
     fn preserves_query_and_fragment() {
         let (mock, captured) = create_mock();
-        open_address_impl(&mock, "github.com/search?q=rust#results", None).unwrap();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        open_address_impl(&mock, &mut db, "github.com/search?q=rust#results", None).unwrap();
+
         assert_eq!(
             *captured.borrow(),
             Some(("https://github.com/search?q=rust#results".to_string(), None))
         );
     }
+
     #[test]
     fn fuzzy_pattern_returns_error() {
         let (mock, captured) = create_mock();
-        let result = open_address_impl(&mock, "github/rust/issues", None);
+        let (_temp_dir, mut db) = create_temp_db();
 
+        let result = open_address_impl(&mock, &mut db, "github/rust/issues", None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not implemented"));
-
         // Verify opener was never called
         assert_eq!(*captured.borrow(), None);
     }

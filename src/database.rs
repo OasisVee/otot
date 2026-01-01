@@ -326,4 +326,190 @@ mod tests {
         let result = extract_segments("github.com/rust-lang/rust");
         assert!(result.is_err());
     }
+
+    // Tests for add_visit and database operations
+    use assert_fs::TempDir;
+    fn create_test_db() -> (TempDir, SqliteDatabase) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::open_at(&db_path).unwrap();
+        (temp_dir, db)
+    }
+    #[test]
+    fn add_visit_creates_new_entry() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust";
+        let timestamp = SystemTime::now();
+
+        db.add_visit(url, timestamp).unwrap();
+
+        // Verify entry was created by querying directly
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 1);
+    }
+    #[test]
+    fn add_visit_increments_score_on_duplicate() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust";
+
+        // First visit
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        // Second visit
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        // Third visit
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        // Verify score incremented
+        let score: f64 = db
+            .conn
+            .query_row("SELECT score FROM urls WHERE full_url = ?1", [url], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(score, 3.0);
+    }
+    #[test]
+    fn add_visit_updates_last_accessed() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust";
+
+        let first_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        db.add_visit(url, first_time).unwrap();
+
+        let second_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2000);
+        db.add_visit(url, second_time).unwrap();
+
+        // Verify last_accessed was updated
+        let last_accessed: i64 = db
+            .conn
+            .query_row(
+                "SELECT last_accessed FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(last_accessed, 2000);
+    }
+    #[test]
+    fn add_visit_stores_segments_correctly() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust/issues";
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        // Verify segments stored as JSON
+        let segments_json: String = db
+            .conn
+            .query_row(
+                "SELECT segments FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
+        assert_eq!(segments, vec!["rust-lang", "rust", "issues"]);
+    }
+    #[test]
+    fn add_visit_stores_last_segment_correctly() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust/issues";
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        // Verify last segment
+        let last_segment: String = db
+            .conn
+            .query_row(
+                "SELECT last_segment FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(last_segment, "issues");
+    }
+    #[test]
+    fn add_visit_normalizes_segments_to_lowercase() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://GitHub.com/Rust-Lang/RUST";
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        let segments_json: String = db
+            .conn
+            .query_row(
+                "SELECT segments FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
+        assert_eq!(segments, vec!["rust-lang", "rust"]);
+    }
+    #[test]
+    fn add_visit_handles_url_with_no_path() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com";
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        let segments_json: String = db
+            .conn
+            .query_row(
+                "SELECT segments FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
+        assert_eq!(segments, Vec::<String>::new());
+
+        let last_segment: String = db
+            .conn
+            .query_row(
+                "SELECT last_segment FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(last_segment, "");
+    }
+    #[test]
+    fn add_visit_multiple_different_urls() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://github.com/microsoft/typescript", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://gitlab.com/foo/bar", SystemTime::now())
+            .unwrap();
+
+        // Verify all three URLs exist
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM urls", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 3);
+    }
 }
