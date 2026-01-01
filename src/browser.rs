@@ -58,9 +58,16 @@ pub fn open_address_impl(
             opener.open(url.as_str(), preferred_browser)?;
             Ok(())
         }
-        InputType::FuzzyPattern(_segments) => {
-            anyhow::bail!("Opening links from a fuzzy pattern is not implemented yet!")
-        }
+        InputType::FuzzyPattern(segments) => match db.get_best_match(&segments)? {
+            Some(best_match) => {
+                db.add_visit(&best_match, SystemTime::now())?;
+                opener.open(best_match.as_str(), preferred_browser)?;
+                Ok(())
+            }
+            None => {
+                anyhow::bail!("No matching URL found in history");
+            }
+        },
     }
 }
 
