@@ -1,12 +1,24 @@
-name: Homebrew-Publish
+name: Publish-Release
 on:
   push:
     tags:
       - 'v*.*.*'
 jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   update-homebrew:
     name: Update Homebrew formula
     runs-on: ubuntu-latest
+    needs: create-release
     steps:
       - uses: Justintime50/homebrew-releaser@v1
         with:
