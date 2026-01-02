@@ -35,4 +35,4 @@ jobs:
           install: 'system "cargo", "install", *std_cargo_args'
           test: 'assert_match version.to_s, shell_output("#{bin}/otot --version")'
 
-          depends_on: rust => :build
+          depends_on: '"rust" => :build'
