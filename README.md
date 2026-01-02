@@ -1,6 +1,8 @@
 # otot
 A command-line tool for quickly opening URLs with fuzzy matching and frecency-based search.
 
+[![CI](https://github.com/idiomattic/otot/workflows/CI/badge.svg)](https://github.com/idiomattic/otot/actions)
+
 ## Overview
 `otot` ("Open Tab Over There") helps you quickly open links from your terminal by remembering each usage and allowing fuzzy pattern matching. Instead of typing full URLs, use partial matches to quickly access your most frequently and recently visited sites.
 
