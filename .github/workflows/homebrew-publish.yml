@@ -1,24 +1,12 @@
-name: Publish
+name: Homebrew-Publish
 on:
   push:
     tags:
       - 'v*.*.*'
 jobs:
-  publish:
-    name: Publish to crates.io
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
   update-homebrew:
     name: Update Homebrew formula
     runs-on: ubuntu-latest
-    needs: publish
     steps:
       - uses: Justintime50/homebrew-releaser@v1
         with:
