@@ -3,6 +3,8 @@ on:
   push:
     tags:
       - 'v*.*.*'
+permissions:
+  contents: write
 jobs:
   create-release:
     name: Create GitHub Release
@@ -13,8 +15,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   update-homebrew:
     name: Update Homebrew formula
     runs-on: ubuntu-latest
