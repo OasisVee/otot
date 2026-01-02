@@ -135,8 +135,10 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    type CapturedCall = (String, Option<String>);
+    type SharedCapture = Rc<RefCell<Option<CapturedCall>>>;
     pub struct MockBrowserOpener {
-        pub captured: std::rc::Rc<std::cell::RefCell<Option<(String, Option<String>)>>>,
+        pub captured: SharedCapture,
     }
 
     impl BrowserOpener for MockBrowserOpener {

@@ -29,18 +29,6 @@ pub fn open_url(url: &str, browser: Option<&str>) -> std::io::Result<()> {
     }
 }
 
-#[cfg(test)]
-pub struct MockBrowserOpener {
-    pub captured: std::rc::Rc<std::cell::RefCell<Option<(String, Option<String>)>>>,
-}
-#[cfg(test)]
-impl BrowserOpener for MockBrowserOpener {
-    fn open(&self, url: &str, browser: Option<&str>) -> std::io::Result<()> {
-        *self.captured.borrow_mut() = Some((url.to_string(), browser.map(String::from)));
-        Ok(())
-    }
-}
-
 pub fn open_address_impl(
     opener: &dyn BrowserOpener,
     db: &mut dyn Database,
@@ -77,10 +65,22 @@ mod tests {
     use assert_fs::TempDir;
     use std::cell::RefCell;
     use std::rc::Rc;
-    fn create_mock() -> (
-        MockBrowserOpener,
-        Rc<RefCell<Option<(String, Option<String>)>>>,
-    ) {
+
+    type CapturedCall = (String, Option<String>);
+    type SharedCapture = Rc<RefCell<Option<CapturedCall>>>;
+
+    pub struct MockBrowserOpener {
+        pub captured: SharedCapture,
+    }
+
+    impl BrowserOpener for MockBrowserOpener {
+        fn open(&self, url: &str, browser: Option<&str>) -> std::io::Result<()> {
+            *self.captured.borrow_mut() = Some((url.to_string(), browser.map(String::from)));
+            Ok(())
+        }
+    }
+
+    fn create_mock() -> (MockBrowserOpener, SharedCapture) {
         let captured = Rc::new(RefCell::new(None));
         let mock = MockBrowserOpener {
             captured: captured.clone(),
