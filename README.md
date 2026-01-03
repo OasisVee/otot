@@ -44,6 +44,12 @@ otot open github/rust
 ```
 This finds the most relevant URL containing both "github" and "rust" based on your visit history. The ranking uses a frecency algorithm that considers both frequency (how often you visit) and recency (when you last visited).
 
+#### Query the database
+```bash
+otot query github/rust
+```
+This returns all matches in a table, using the same query as `open`, for debugging.
+
 ### Configuration
 Set your preferred browser:
 ```bash
@@ -95,7 +101,6 @@ This project is heavily inspired by [zoxide](https://github.com/ajeetdsouza/zoxi
 
 ## Roadmap
 - [ ] `prune` subcommand to remove records past a certain age
-- [ ] `query` subcommand to list matches with their frecency scores, for debugging
 - [ ] `stats` subcommand to print recent or highest activity
 
 ## License
