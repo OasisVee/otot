@@ -9,6 +9,7 @@ pub trait Database {
     fn add_visit(&mut self, url: &str, timestamp: SystemTime) -> Result<()>;
     fn fuzzy_match(&self, pattern: &[String]) -> Result<Vec<(String, f64, i64)>>;
     fn get_best_match(&self, pattern: &[String]) -> Result<Option<String>>;
+    fn get_highest_usage_urls(&self, size: u16) -> Result<Vec<(String, f64, i64)>>;
 }
 
 pub struct SqliteDatabase {
@@ -142,6 +143,26 @@ impl Database for SqliteDatabase {
             .into_iter()
             .next()
             .map(|(s, _, _)| s))
+    }
+
+    fn get_highest_usage_urls(&self, size: u16) -> Result<Vec<(String, f64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT full_url, score, last_accessed
+                 FROM urls
+                 ORDER BY score DESC
+                 LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map([size], |row| {
+            Ok((
+                row.get::<_, String>(0)?, // full_url
+                row.get::<_, f64>(1)?,    // score
+                row.get::<_, i64>(2)?,    // last_accessed
+            ))
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to collect highest usage URLs")
     }
 }
 

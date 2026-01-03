@@ -24,6 +24,10 @@ enum Command {
     Query {
         address: String,
     },
+    Stats {
+        #[arg(short, long, default_value = "10")]
+        size: u16,
+    },
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -141,6 +145,34 @@ impl App {
         }
     }
 
+    fn handle_stats(&mut self, size: u16) -> Result<()> {
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
+        let top_urls = db.get_highest_usage_urls(size)?;
+
+        if top_urls.is_empty() {
+            println!("No URLs in history yet.");
+            return Ok(());
+        }
+
+        println!("Top {} Most Visited URLs\n", size);
+        println!("{:<50} {:>8} {:>15}", "URL", "SCORE", "LAST VISITED");
+        println!("{}", "-".repeat(75));
+
+        for (url, score, last_accessed) in top_urls {
+            println!(
+                "{:<50} {:>8.1} {:>12}",
+                url,
+                score,
+                format_relative_time(last_accessed)
+            );
+        }
+
+        Ok(())
+    }
+
     fn handle_config(&self, action: ConfigAction) -> Result<()> {
         handle_config_action(action)
     }
@@ -158,6 +190,7 @@ fn main() -> Result<()> {
     match args.command {
         Command::Open { address } => app.handle_open(&address)?,
         Command::Query { address } => app.handle_query(&address)?,
+        Command::Stats { size } => app.handle_stats(size)?,
         Command::Config { action } => app.handle_config(action)?,
     }
 
@@ -200,6 +233,10 @@ mod tests {
 
         fn get_best_match(&self, _pattern: &[String]) -> anyhow::Result<Option<String>> {
             Ok(None)
+        }
+
+        fn get_highest_usage_urls(&self, size: u16) -> Result<Vec<(String, f64, i64)>> {
+            Ok(vec![])
         }
     }
 
