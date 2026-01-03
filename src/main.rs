@@ -360,4 +360,40 @@ mod tests {
         let result = app.handle_config(ConfigAction::Path);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn parse_duration_days() {
+        let duration = parse_duration("30d").unwrap();
+        assert_eq!(duration.as_secs(), 30 * 86400);
+    }
+    #[test]
+    fn parse_duration_weeks() {
+        let duration = parse_duration("2w").unwrap();
+        assert_eq!(duration.as_secs(), 2 * 604800);
+    }
+    #[test]
+    fn parse_duration_months() {
+        let duration = parse_duration("6m").unwrap();
+        assert_eq!(duration.as_secs(), 6 * 2592000);
+    }
+    #[test]
+    fn parse_duration_years() {
+        let duration = parse_duration("1y").unwrap();
+        assert_eq!(duration.as_secs(), 31536000);
+    }
+    #[test]
+    fn parse_duration_invalid_unit() {
+        let result = parse_duration("30x");
+        assert!(result.is_err());
+    }
+    #[test]
+    fn parse_duration_invalid_number() {
+        let result = parse_duration("notanumberd");
+        assert!(result.is_err());
+    }
+    #[test]
+    fn parse_duration_empty_string() {
+        let result = parse_duration("");
+        assert!(result.is_err());
+    }
 }

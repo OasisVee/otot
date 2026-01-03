@@ -786,4 +786,98 @@ mod tests {
 
         assert_eq!(results.len(), 0);
     }
+
+    #[test]
+    fn prune_by_age_removes_old_urls() {
+        let (_temp_dir, mut db) = create_test_db();
+        let old_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        let recent_time = SystemTime::now();
+        db.add_visit("https://github.com/old", old_time).unwrap();
+        db.add_visit("https://github.com/recent", recent_time)
+            .unwrap();
+
+        let deleted = db.prune_by_age(3600).unwrap();
+        assert_eq!(deleted, 1);
+        // Verify the old URL is gone and recent one remains
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM urls", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 1);
+        let remaining_url: String = db
+            .conn
+            .query_row("SELECT full_url FROM urls", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(remaining_url, "https://github.com/recent");
+    }
+    #[test]
+    fn prune_by_age_returns_zero_when_no_matches() {
+        let (_temp_dir, mut db) = create_test_db();
+        db.add_visit("https://github.com/recent", SystemTime::now())
+            .unwrap();
+
+        let deleted = db.prune_by_age(31536000).unwrap();
+        assert_eq!(deleted, 0);
+    }
+    #[test]
+    fn prune_by_url_pattern_removes_matching_urls() {
+        let (_temp_dir, mut db) = create_test_db();
+        db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://github.com/microsoft/typescript", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://gitlab.com/foo/bar", SystemTime::now())
+            .unwrap();
+        let deleted = db.prune_by_url_pattern("github.com").unwrap();
+        assert_eq!(deleted, 2);
+
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM urls", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 1);
+        let remaining_url: String = db
+            .conn
+            .query_row("SELECT full_url FROM urls", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(remaining_url, "https://gitlab.com/foo/bar");
+    }
+    #[test]
+    fn prune_by_url_pattern_returns_zero_when_no_matches() {
+        let (_temp_dir, mut db) = create_test_db();
+        db.add_visit("https://github.com/rust", SystemTime::now())
+            .unwrap();
+
+        let deleted = db.prune_by_url_pattern("gitlab.com").unwrap();
+        assert_eq!(deleted, 0);
+    }
+    #[test]
+    fn prune_by_url_pattern_matches_partial_strings() {
+        let (_temp_dir, mut db) = create_test_db();
+        db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://github.com/microsoft/rust", SystemTime::now())
+            .unwrap();
+        db.add_visit("https://github.com/other/project", SystemTime::now())
+            .unwrap();
+
+        let deleted = db.prune_by_url_pattern("rust").unwrap();
+        assert_eq!(deleted, 2);
+    }
+    #[test]
+    fn prune_by_age_with_empty_database() {
+        let (_temp_dir, mut db) = create_test_db();
+        let deleted = db.prune_by_age(86400).unwrap();
+        assert_eq!(deleted, 0);
+    }
+    #[test]
+    fn prune_by_url_pattern_with_empty_database() {
+        let (_temp_dir, mut db) = create_test_db();
+        let deleted = db.prune_by_url_pattern("github.com").unwrap();
+        assert_eq!(deleted, 0);
+    }
 }
