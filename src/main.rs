@@ -2,7 +2,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use otot::{
     BrowserOpener, ConfigAction, Database, InputType, OtotConfig, SqliteDatabase,
-    SystemBrowserOpener, classify_input, handle_config_action, open_address_impl,
+    SystemBrowserOpener, classify_input, format_relative_time, handle_config_action,
+    open_address_impl,
 };
 
 #[derive(Parser)]
@@ -125,7 +126,12 @@ impl App {
                     println!("{:<50} {:>8} {:>15}", "URL", "SCORE", "LAST VISITED");
                     println!("{}", "-".repeat(75));
                     for (match_url, score, last_accessed) in matches {
-                        let () = println!("{:<50} {:>8.1} {:>15}", match_url, score, last_accessed);
+                        let () = println!(
+                            "{:<50} {:>8.1} {:>12}",
+                            match_url,
+                            score,
+                            format_relative_time(last_accessed)
+                        );
                     }
                     Ok(())
                 } else {

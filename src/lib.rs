@@ -1,6 +1,7 @@
 mod browser;
 mod database;
 mod url_classify;
+use std::time::SystemTime;
 
 pub use browser::{BrowserOpener, SystemBrowserOpener, open_address_impl};
 pub use database::{Database, SqliteDatabase};
@@ -117,6 +118,23 @@ pub fn handle_config_action_with_config(
             println!("{}", config_path_display);
             Ok(())
         }
+    }
+}
+
+pub fn format_relative_time(timestamp_secs: i64) -> String {
+    let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(timestamp_secs as u64);
+    let elapsed = SystemTime::now()
+        .duration_since(timestamp)
+        .unwrap_or_default();
+
+    let secs = elapsed.as_secs();
+
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        86400..=604799 => format!("{}d ago", secs / 86400),
+        _ => format!("{}w ago", secs / 604800),
     }
 }
 
