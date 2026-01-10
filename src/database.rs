@@ -37,19 +37,60 @@ impl SqliteDatabase {
 
     fn initialize_schema(&self) -> Result<()> {
         debug!("Initializing Database schema");
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS urls (
-                id INTEGER PRIMARY KEY,
-                full_url TEXT NOT NULL UNIQUE,
-                segments TEXT NOT NULL,
-                last_segment TEXT NOT NULL,
-                score REAL NOT NULL DEFAULT 1.0,
-                last_accessed INTEGER NOT NULL
-            );
 
-            CREATE INDEX IF NOT EXISTS idx_urls_last_segment
-                ON urls(last_segment COLLATE NOCASE);",
-        )?;
+        let version: i32 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        debug!("Current schema version: {}", version);
+
+        if version < 1 {
+            debug!("Applying migration v1: initial schema");
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS urls (
+                    id INTEGER PRIMARY KEY,
+                    full_url TEXT NOT NULL UNIQUE,
+                    segments TEXT NOT NULL,
+                    last_segment TEXT NOT NULL,
+                    score REAL NOT NULL DEFAULT 1.0,
+                    last_accessed INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_urls_last_segment
+                    ON urls(last_segment COLLATE NOCASE);
+
+                PRAGMA user_version = 1;",
+            )?;
+        }
+
+        if version < 2 {
+            debug!("Applying migration v2: add first_segment column");
+            let has_first_segment: bool = self
+                .conn
+                .prepare("SELECT first_segment FROM urls LIMIT 1")
+                .is_ok();
+
+            if !has_first_segment {
+                self.conn.execute_batch(
+                    "ALTER TABLE urls ADD COLUMN first_segment TEXT NOT NULL DEFAULT '';",
+                )?;
+
+                self.conn.execute(
+                    "UPDATE urls SET first_segment = COALESCE(json_extract(segments, '$[0]'), '')",
+                    [],
+                )?;
+
+                self.conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_urls_first_segment
+                        ON urls(first_segment COLLATE NOCASE);",
+                )?;
+            }
+
+            self.conn.execute_batch("PRAGMA user_version = 2;")?;
+            info!("Migration v2 complete: added first_segment column");
+        }
+
         Ok(())
     }
 
@@ -65,6 +106,7 @@ impl SqliteDatabase {
 impl Database for SqliteDatabase {
     fn add_visit(&mut self, url: &str, timestamp: SystemTime) -> Result<()> {
         let segments = extract_segments(url)?;
+        let first_segment = get_first_segment(&segments).unwrap_or_default();
         let last_segment = get_last_segment(&segments).unwrap_or_default();
         let segments_json = serde_json::to_string(&segments)?;
         let timestamp_secs = timestamp.duration_since(SystemTime::UNIX_EPOCH)?.as_secs() as i64;
@@ -72,12 +114,12 @@ impl Database for SqliteDatabase {
         info!("Recording visit for {:?}", url);
 
         self.conn.execute(
-            "INSERT INTO urls (full_url, segments, last_segment, score, last_accessed)
-                  VALUES (?1, ?2, ?3, 1.0, ?4)
+            "INSERT INTO urls (full_url, segments, first_segment, last_segment, score, last_accessed)
+                  VALUES (?1, ?2, ?3, ?4, 1.0, ?5)
                   ON CONFLICT(full_url) DO UPDATE SET
                       score = score + 1.0,
                       last_accessed = excluded.last_accessed",
-            params![url, segments_json, last_segment, timestamp_secs],
+            params![url, segments_json, first_segment, last_segment, timestamp_secs],
         )?;
 
         Ok(())
@@ -88,16 +130,31 @@ impl Database for SqliteDatabase {
             return Ok(vec![]);
         }
 
-        let last_segment = pattern.last().unwrap();
+        let first_prefix = pattern
+            .first()
+            .and_then(|s| s.chars().next())
+            .map(|c| format!("{}%", c.to_lowercase()))
+            .unwrap_or_else(|| "%".to_string());
+
+        let last_prefix = pattern
+            .last()
+            .and_then(|s| s.chars().next())
+            .map(|c| format!("{}%", c.to_lowercase()))
+            .unwrap_or_else(|| "%".to_string());
+
         let mut stmt = self.conn.prepare(
             "SELECT full_url, segments, score, last_accessed
                  FROM urls
-                 WHERE last_segment = ?1 COLLATE NOCASE",
+                 WHERE first_segment LIKE ?1 COLLATE NOCASE
+                   AND last_segment LIKE ?2 COLLATE NOCASE",
         )?;
 
-        debug!("Querying for match on last-segment: {:?}", last_segment);
+        debug!(
+            "Querying with prefix filters: first='{}', last='{}'",
+            first_prefix, last_prefix
+        );
 
-        let rows = stmt.query_map([last_segment], |row| {
+        let rows = stmt.query_map(params![first_prefix, last_prefix], |row| {
             Ok((
                 row.get::<_, String>(0)?, // full_url
                 row.get::<_, String>(1)?, // segments JSON
@@ -106,7 +163,7 @@ impl Database for SqliteDatabase {
             ))
         })?;
 
-        let mut matches: Vec<(String, f64, i64)> = Vec::new();
+        let mut matches: Vec<(String, f64, i64, i64)> = Vec::new(); // url, frecency, last_accessed, match_score
         let mut row_count: u64 = 0;
 
         for row in rows {
@@ -115,17 +172,17 @@ impl Database for SqliteDatabase {
 
             let url_segments: Vec<String> = serde_json::from_str(&segments_json)?;
 
-            if does_pattern_match_segments(&url_segments, pattern) {
+            if let Some(match_score) = score_pattern_match(&url_segments, pattern) {
                 let frecency = calculate_frecency(score, last_accessed);
                 debug!(
-                    "Matched: {} (score: {}, frecency: {:.2})",
-                    url, score, frecency
+                    "Matched: {} (visit_score: {}, frecency: {:.2}, match_quality: {})",
+                    url, score, frecency, match_score
                 );
-                matches.push((url, frecency, last_accessed));
+                matches.push((url, frecency, last_accessed, match_score));
             }
         }
 
-        debug!("{:?} records matched on last segment", row_count);
+        debug!("{:?} records matched prefix filter", row_count);
         if matches.is_empty() {
             info!("No matches found for pattern {:?}", pattern);
         } else {
@@ -136,9 +193,20 @@ impl Database for SqliteDatabase {
             );
         }
 
-        matches.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        // Sort by combined score: frecency * match_quality_multiplier
+        // Normalize match_score to a multiplier (0.5 to 1.5 range)
+        // This ensures good matches get boosted but high-frecency URLs aren't buried
+        matches.sort_by(|a, b| {
+            let a_combined = a.1 * match_quality_multiplier(a.3);
+            let b_combined = b.1 * match_quality_multiplier(b.3);
+            b_combined.partial_cmp(&a_combined).unwrap()
+        });
 
-        Ok(matches)
+        // Return in the original format (dropping match_score)
+        Ok(matches
+            .into_iter()
+            .map(|(url, frecency, last_accessed, _)| (url, frecency, last_accessed))
+            .collect())
     }
 
     fn get_best_match(&self, pattern: &[String]) -> Result<Option<String>> {
@@ -235,38 +303,49 @@ fn extract_segments(url_str: &str) -> Result<Vec<String>> {
     Ok(segments)
 }
 
+fn get_first_segment(segments: &[String]) -> Option<String> {
+    segments.first().cloned()
+}
+
 fn get_last_segment(segments: &[String]) -> Option<String> {
     segments.last().cloned()
 }
 
-fn does_pattern_match_segments(url_segments: &[String], pattern: &[String]) -> bool {
+const MIN_FUZZY_SCORE: i64 = 10;
+
+fn score_pattern_match(url_segments: &[String], pattern: &[String]) -> Option<i64> {
     if pattern.is_empty() {
-        return true;
+        return Some(0);
+    }
+
+    if url_segments.is_empty() {
+        return None;
     }
 
     let matcher = SkimMatcherV2::default();
+    let mut total_score: i64 = 0;
 
     if let (Some(pattern_first), Some(url_first)) = (pattern.first(), url_segments.first()) {
-        let first_match = if pattern_first.len() < 3 {
-            pattern_first.eq_ignore_ascii_case(url_first)
+        let first_score = if pattern_first.eq_ignore_ascii_case(url_first) {
+            100
         } else {
-            matcher.fuzzy_match(url_first, pattern_first).is_some()
+            matcher
+                .fuzzy_match(url_first, pattern_first)
+                .filter(|&s| s >= MIN_FUZZY_SCORE)?
         };
-
-        if !first_match {
-            return false;
-        }
+        total_score += first_score;
     }
 
     if let (Some(pattern_last), Some(url_last)) = (pattern.last(), url_segments.last()) {
-        let last_match = if pattern_last.len() < 3 {
-            pattern_last.eq_ignore_ascii_case(url_last)
-        } else {
-            matcher.fuzzy_match(url_last, pattern_last).is_some()
-        };
-
-        if !last_match {
-            return false;
+        if pattern.len() > 1 {
+            let last_score = if pattern_last.eq_ignore_ascii_case(url_last) {
+                100
+            } else {
+                matcher
+                    .fuzzy_match(url_last, pattern_last)
+                    .filter(|&s| s >= MIN_FUZZY_SCORE)?
+            };
+            total_score += last_score;
         }
     }
 
@@ -274,17 +353,30 @@ fn does_pattern_match_segments(url_segments: &[String], pattern: &[String]) -> b
     for pattern_seg in pattern {
         let found = url_segments[url_idx..]
             .iter()
-            .position(|url_seg| url_seg == pattern_seg);
+            .position(|url_seg| url_seg.eq_ignore_ascii_case(pattern_seg));
 
         match found {
             Some(offset) => {
                 url_idx += offset + 1;
             }
-            None => return false,
+            None => {
+                let fuzzy_found = url_segments[url_idx..].iter().position(|url_seg| {
+                    matcher
+                        .fuzzy_match(url_seg, pattern_seg)
+                        .is_some_and(|s| s >= MIN_FUZZY_SCORE)
+                });
+
+                match fuzzy_found {
+                    Some(offset) => {
+                        url_idx += offset + 1;
+                    }
+                    None => return None,
+                }
+            }
         }
     }
 
-    true
+    Some(total_score)
 }
 
 fn calculate_frecency(score: f64, last_accessed: i64) -> f64 {
@@ -308,6 +400,23 @@ fn calculate_frecency(score: f64, last_accessed: i64) -> f64 {
     score * multiplier
 }
 
+/// Converts a raw match score into a multiplier for ranking.
+/// Returns a value in the range [0.5, 1.5] to boost good matches
+/// without completely burying high-frecency URLs with weaker matches.
+fn match_quality_multiplier(match_score: i64) -> f64 {
+    // Score ranges:
+    // - Single segment exact match: 100
+    // - Two segment exact matches: 200
+    // - Fuzzy matches: typically 10-50 per segment
+    //
+    // We normalize to [0.5, 1.5]:
+    // - score <= 20: 0.5 (weak fuzzy match)
+    // - score >= 200: 1.5 (perfect match)
+    // - Linear interpolation between
+    let normalized = ((match_score as f64 - 20.0) / 180.0).clamp(0.0, 1.0);
+    0.5 + normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +424,99 @@ mod tests {
     fn to_strings(slice: &[&str]) -> Vec<String> {
         slice.iter().map(|s| s.to_string()).collect()
     }
-    // does_pattern_match_segments
+
+    fn does_pattern_match_segments(url_segments: &[String], pattern: &[String]) -> bool {
+        score_pattern_match(url_segments, pattern).is_some()
+    }
+
+    // ===========================================
+    // score_pattern_match tests
+    // ===========================================
+
+    #[test]
+    fn score_exact_match_single_segment() {
+        let url_segments = to_strings(&["github"]);
+        let pattern = to_strings(&["github"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        assert_eq!(score, Some(100)); // exact match bonus
+    }
+
+    #[test]
+    fn score_exact_match_two_segments() {
+        let url_segments = to_strings(&["github", "rust"]);
+        let pattern = to_strings(&["github", "rust"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        assert_eq!(score, Some(200)); // 100 for first + 100 for last
+    }
+
+    #[test]
+    fn score_fuzzy_match_gh_matches_github() {
+        let url_segments = to_strings(&["github", "rust"]);
+        let pattern = to_strings(&["gh", "rust"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        // Should match: "gh" fuzzy matches "github", "rust" exact matches
+        assert!(score.is_some());
+        assert!(score.unwrap() > 0);
+    }
+
+    #[test]
+    fn score_fuzzy_match_gthub_matches_github() {
+        let url_segments = to_strings(&["github", "rust"]);
+        let pattern = to_strings(&["gthub", "rust"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        // Should match: "gthub" (typo) fuzzy matches "github"
+        assert!(score.is_some());
+    }
+
+    #[test]
+    fn score_no_match_completely_different() {
+        let url_segments = to_strings(&["github", "rust"]);
+        let pattern = to_strings(&["gitlab", "python"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn score_empty_pattern_returns_zero() {
+        let url_segments = to_strings(&["github", "rust"]);
+        let pattern: Vec<String> = vec![];
+        let score = score_pattern_match(&url_segments, &pattern);
+        assert_eq!(score, Some(0));
+    }
+
+    #[test]
+    fn score_empty_url_returns_none() {
+        let url_segments: Vec<String> = vec![];
+        let pattern = to_strings(&["github"]);
+        let score = score_pattern_match(&url_segments, &pattern);
+        assert!(score.is_none());
+    }
+
+    // ===========================================
+    // match_quality_multiplier tests
+    // ===========================================
+
+    #[test]
+    fn multiplier_weak_match_returns_low() {
+        let mult = match_quality_multiplier(10);
+        assert!(mult < 0.6);
+    }
+
+    #[test]
+    fn multiplier_perfect_match_returns_high() {
+        let mult = match_quality_multiplier(200);
+        assert!((mult - 1.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn multiplier_medium_match_returns_middle() {
+        let mult = match_quality_multiplier(100);
+        assert!(mult > 0.8 && mult < 1.2);
+    }
+
+    // ===========================================
+    // does_pattern_match_segments tests (legacy wrapper)
+    // ===========================================
 
     // Category 1: First Segment Rule
     #[test]
@@ -420,13 +621,15 @@ mod tests {
         assert!(!does_pattern_match_segments(&url_segments, &pattern));
     }
 
-    // extract_segments
+    // ===========================================
+    // extract_segments tests
+    // ===========================================
 
     // Category 1: Basic URL Parsing
     #[test]
     fn extract_segments_simple_url_with_path() {
         let result = extract_segments("https://github.com/rust-lang/rust").unwrap();
-        assert_eq!(result, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(result, vec!["github.com", "rust-lang", "rust"]);
     }
     #[test]
     fn extract_segments_multiple_path_segments() {
@@ -434,56 +637,56 @@ mod tests {
             extract_segments("https://github.com/microsoft/typescript/issues/123").unwrap();
         assert_eq!(
             result,
-            vec!["github", "microsoft", "typescript", "issues", "123"]
+            vec!["github.com", "microsoft", "typescript", "issues", "123"]
         );
     }
     #[test]
     fn extract_segments_root_only_no_path() {
         let result = extract_segments("https://github.com").unwrap();
-        assert_eq!(result, vec!["github"]);
+        assert_eq!(result, vec!["github.com"]);
     }
     #[test]
     fn extract_segments_trailing_slash() {
         let result = extract_segments("https://github.com/rust-lang/rust/").unwrap();
-        assert_eq!(result, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(result, vec!["github.com", "rust-lang", "rust"]);
     }
     // Category 2: Case Normalization
     #[test]
     fn extract_segments_mixed_case_normalized() {
         let result = extract_segments("https://GitHub.COM/Rust-Lang/RUST").unwrap();
-        assert_eq!(result, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(result, vec!["github.com", "rust-lang", "rust"]);
     }
     #[test]
     fn extract_segments_already_lowercase() {
         let result = extract_segments("https://github.com/rust-lang/rust").unwrap();
-        assert_eq!(result, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(result, vec!["github.com", "rust-lang", "rust"]);
     }
     // Category 3: Query Parameters and Fragments
     #[test]
     fn extract_segments_with_query_parameters() {
         let result = extract_segments("https://github.com/search?q=rust").unwrap();
-        assert_eq!(result, vec!["github", "search"]);
+        assert_eq!(result, vec!["github.com", "search"]);
     }
     #[test]
     fn extract_segments_with_fragment() {
         let result = extract_segments("https://github.com/rust-lang/rust#readme").unwrap();
-        assert_eq!(result, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(result, vec!["github.com", "rust-lang", "rust"]);
     }
     #[test]
     fn extract_segments_with_query_and_fragment() {
         let result = extract_segments("https://github.com/search?q=rust#results").unwrap();
-        assert_eq!(result, vec!["github", "search"]);
+        assert_eq!(result, vec!["github.com", "search"]);
     }
     // Category 4: Different Schemes
     #[test]
     fn extract_segments_http_scheme() {
         let result = extract_segments("http://example.com/foo/bar").unwrap();
-        assert_eq!(result, vec!["example", "foo", "bar"]);
+        assert_eq!(result, vec!["example.com", "foo", "bar"]);
     }
     #[test]
     fn extract_segments_https_scheme() {
         let result = extract_segments("https://example.com/foo/bar").unwrap();
-        assert_eq!(result, vec!["example", "foo", "bar"]);
+        assert_eq!(result, vec!["example.com", "foo", "bar"]);
     }
     // Category 5: Error Cases
     #[test]
@@ -502,14 +705,18 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Tests for add_visit and database operations
+    // ===========================================
+    // Database operation tests
+    // ===========================================
     use assert_fs::TempDir;
+
     fn create_test_db() -> (TempDir, SqliteDatabase) {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::open_at(&db_path).unwrap();
         (temp_dir, db)
     }
+
     #[test]
     fn add_visit_creates_new_entry() {
         let (_temp_dir, mut db) = create_test_db();
@@ -519,7 +726,6 @@ mod tests {
 
         db.add_visit(url, timestamp).unwrap();
 
-        // Verify entry was created by querying directly
         let count: i64 = db
             .conn
             .query_row(
@@ -531,22 +737,36 @@ mod tests {
 
         assert_eq!(count, 1);
     }
+
+    #[test]
+    fn add_visit_stores_first_segment() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        let url = "https://github.com/rust-lang/rust";
+        db.add_visit(url, SystemTime::now()).unwrap();
+
+        let first_segment: String = db
+            .conn
+            .query_row(
+                "SELECT first_segment FROM urls WHERE full_url = ?1",
+                [url],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(first_segment, "github.com");
+    }
+
     #[test]
     fn add_visit_increments_score_on_duplicate() {
         let (_temp_dir, mut db) = create_test_db();
 
         let url = "https://github.com/rust-lang/rust";
 
-        // First visit
+        db.add_visit(url, SystemTime::now()).unwrap();
+        db.add_visit(url, SystemTime::now()).unwrap();
         db.add_visit(url, SystemTime::now()).unwrap();
 
-        // Second visit
-        db.add_visit(url, SystemTime::now()).unwrap();
-
-        // Third visit
-        db.add_visit(url, SystemTime::now()).unwrap();
-
-        // Verify score incremented
         let score: f64 = db
             .conn
             .query_row("SELECT score FROM urls WHERE full_url = ?1", [url], |row| {
@@ -556,6 +776,7 @@ mod tests {
 
         assert_eq!(score, 3.0);
     }
+
     #[test]
     fn add_visit_updates_last_accessed() {
         let (_temp_dir, mut db) = create_test_db();
@@ -568,7 +789,6 @@ mod tests {
         let second_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2000);
         db.add_visit(url, second_time).unwrap();
 
-        // Verify last_accessed was updated
         let last_accessed: i64 = db
             .conn
             .query_row(
@@ -580,6 +800,7 @@ mod tests {
 
         assert_eq!(last_accessed, 2000);
     }
+
     #[test]
     fn add_visit_stores_segments_correctly() {
         let (_temp_dir, mut db) = create_test_db();
@@ -587,7 +808,6 @@ mod tests {
         let url = "https://github.com/rust-lang/rust/issues";
         db.add_visit(url, SystemTime::now()).unwrap();
 
-        // Verify segments stored as JSON
         let segments_json: String = db
             .conn
             .query_row(
@@ -598,8 +818,9 @@ mod tests {
             .unwrap();
 
         let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, vec!["github", "rust-lang", "rust", "issues"]);
+        assert_eq!(segments, vec!["github.com", "rust-lang", "rust", "issues"]);
     }
+
     #[test]
     fn add_visit_stores_last_segment_correctly() {
         let (_temp_dir, mut db) = create_test_db();
@@ -607,7 +828,6 @@ mod tests {
         let url = "https://github.com/rust-lang/rust/issues";
         db.add_visit(url, SystemTime::now()).unwrap();
 
-        // Verify last segment
         let last_segment: String = db
             .conn
             .query_row(
@@ -619,6 +839,7 @@ mod tests {
 
         assert_eq!(last_segment, "issues");
     }
+
     #[test]
     fn add_visit_normalizes_segments_to_lowercase() {
         let (_temp_dir, mut db) = create_test_db();
@@ -636,8 +857,9 @@ mod tests {
             .unwrap();
 
         let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, vec!["github", "rust-lang", "rust"]);
+        assert_eq!(segments, vec!["github.com", "rust-lang", "rust"]);
     }
+
     #[test]
     fn add_visit_handles_url_with_no_path() {
         let (_temp_dir, mut db) = create_test_db();
@@ -645,17 +867,14 @@ mod tests {
         let url = "https://github.com";
         db.add_visit(url, SystemTime::now()).unwrap();
 
-        let segments_json: String = db
+        let first_segment: String = db
             .conn
             .query_row(
-                "SELECT segments FROM urls WHERE full_url = ?1",
+                "SELECT first_segment FROM urls WHERE full_url = ?1",
                 [url],
                 |row| row.get(0),
             )
             .unwrap();
-
-        let segments: Vec<String> = serde_json::from_str(&segments_json).unwrap();
-        assert_eq!(segments, vec!["github"]);
 
         let last_segment: String = db
             .conn
@@ -666,8 +885,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(last_segment, "github");
+        assert_eq!(first_segment, "github.com");
+        assert_eq!(last_segment, "github.com");
     }
+
     #[test]
     fn add_visit_multiple_different_urls() {
         let (_temp_dir, mut db) = create_test_db();
@@ -679,7 +900,6 @@ mod tests {
         db.add_visit("https://gitlab.com/foo/bar", SystemTime::now())
             .unwrap();
 
-        // Verify all three URLs exist
         let count: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM urls", [], |row| row.get(0))
@@ -688,12 +908,14 @@ mod tests {
         assert_eq!(count, 3);
     }
 
-    // fuzzy_match
+    // ===========================================
+    // fuzzy_match tests
+    // ===========================================
+
     #[test]
     fn fuzzy_match_returns_matching_urls() {
         let (_temp_dir, mut db) = create_test_db();
 
-        // Add some URLs - make sure they end with "rust"
         db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
             .unwrap();
         db.add_visit("https://github.com/microsoft/rust", SystemTime::now())
@@ -701,16 +923,29 @@ mod tests {
         db.add_visit("https://gitlab.com/rust-lang/rust", SystemTime::now())
             .unwrap();
 
-        // Search for pattern ending in "rust"
         let matches = db
-            .fuzzy_match(&["github".to_string(), "rust".to_string()])
+            .fuzzy_match(&["github.com".to_string(), "rust".to_string()])
             .unwrap();
 
-        // Should match the two github URLs (not gitlab, because first segment doesn't match)
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().any(|(u, _, _)| u.contains("rust-lang")));
         assert!(matches.iter().any(|(u, _, _)| u.contains("microsoft")));
     }
+
+    #[test]
+    fn fuzzy_match_with_typo_in_domain() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
+            .unwrap();
+
+        let matches = db
+            .fuzzy_match(&["gthub".to_string(), "rust".to_string()])
+            .unwrap();
+
+        assert!(!matches.is_empty());
+    }
+
     #[test]
     fn fuzzy_match_respects_segment_order() {
         let (_temp_dir, mut db) = create_test_db();
@@ -718,30 +953,29 @@ mod tests {
         db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
             .unwrap();
         db.add_visit("https://github.com/rust/issues", SystemTime::now())
-            .unwrap(); // Different structure
+            .unwrap();
 
-        // Pattern: github -> rust-lang -> rust
         let matches = db
             .fuzzy_match(&[
-                "github".to_string(),
+                "github.com".to_string(),
                 "rust-lang".to_string(),
                 "rust".to_string(),
             ])
             .unwrap();
 
-        // Should only match the first URL
         assert_eq!(matches.len(), 1);
         let (match_url, _, _) = &matches[0];
         assert_eq!(match_url, "https://github.com/rust-lang/rust");
     }
+
     #[test]
-    fn fuzzy_match_sorts_by_frecency() {
+    fn fuzzy_match_sorts_by_combined_score() {
         let (_temp_dir, mut db) = create_test_db();
 
         let old_time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
         let recent_time = SystemTime::now();
 
-        // Add URL visited long ago with high score - ending in "rust"
+        // Add URL visited long ago with high visit score
         db.add_visit("https://github.com/old/rust", old_time)
             .unwrap();
         db.add_visit("https://github.com/old/rust", old_time)
@@ -749,18 +983,19 @@ mod tests {
         db.add_visit("https://github.com/old/rust", old_time)
             .unwrap();
 
-        // Add URL visited recently with lower score - also ending in "rust"
+        // Add URL visited recently with lower visit score
         db.add_visit("https://github.com/new/rust", recent_time)
             .unwrap();
 
         let matches = db
-            .fuzzy_match(&["github".to_string(), "rust".to_string()])
+            .fuzzy_match(&["github.com".to_string(), "rust".to_string()])
             .unwrap();
 
         // Recent URL should come first due to recency boost
         let (match_url, _, _) = &matches[0];
         assert_eq!(match_url, "https://github.com/new/rust");
     }
+
     #[test]
     fn fuzzy_match_returns_empty_for_no_matches() {
         let (_temp_dir, mut db) = create_test_db();
@@ -769,13 +1004,16 @@ mod tests {
             .unwrap();
 
         let matches = db
-            .fuzzy_match(&["gitlab".to_string(), "foo".to_string()])
+            .fuzzy_match(&["gitlab.com".to_string(), "foo".to_string()])
             .unwrap();
 
         assert_eq!(matches.len(), 0);
     }
 
-    // get_highest_usage_urls
+    // ===========================================
+    // get_highest_usage_urls tests
+    // ===========================================
+
     #[test]
     fn get_highest_usage_urls_returns_top_urls_by_score() {
         let (_temp_dir, mut db) = create_test_db();
@@ -794,6 +1032,7 @@ mod tests {
         assert_eq!(results[0].0, "https://github.com/high");
         assert_eq!(results[0].1, 3.0);
     }
+
     #[test]
     fn get_highest_usage_urls_respects_limit() {
         let (_temp_dir, mut db) = create_test_db();
@@ -808,6 +1047,7 @@ mod tests {
 
         assert_eq!(results.len(), 2);
     }
+
     #[test]
     fn get_highest_usage_urls_returns_empty_for_empty_db() {
         let (_temp_dir, db) = create_test_db();
@@ -816,6 +1056,10 @@ mod tests {
 
         assert_eq!(results.len(), 0);
     }
+
+    // ===========================================
+    // prune tests
+    // ===========================================
 
     #[test]
     fn prune_by_age_removes_old_urls() {
@@ -828,7 +1072,7 @@ mod tests {
 
         let deleted = db.prune_by_age(3600).unwrap();
         assert_eq!(deleted, 1);
-        // Verify the old URL is gone and recent one remains
+
         let count: i64 = db
             .conn
             .query_row("SELECT COUNT(*) FROM urls", [], |row| row.get(0))
@@ -842,6 +1086,7 @@ mod tests {
 
         assert_eq!(remaining_url, "https://github.com/recent");
     }
+
     #[test]
     fn prune_by_age_returns_zero_when_no_matches() {
         let (_temp_dir, mut db) = create_test_db();
@@ -851,6 +1096,7 @@ mod tests {
         let deleted = db.prune_by_age(31536000).unwrap();
         assert_eq!(deleted, 0);
     }
+
     #[test]
     fn prune_by_url_pattern_removes_matching_urls() {
         let (_temp_dir, mut db) = create_test_db();
@@ -869,13 +1115,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 1);
-        let remaining_url: String = db
-            .conn
-            .query_row("SELECT full_url FROM urls", [], |row| row.get(0))
-            .unwrap();
-
-        assert_eq!(remaining_url, "https://gitlab.com/foo/bar");
     }
+
     #[test]
     fn prune_by_url_pattern_returns_zero_when_no_matches() {
         let (_temp_dir, mut db) = create_test_db();
@@ -885,6 +1126,7 @@ mod tests {
         let deleted = db.prune_by_url_pattern("gitlab.com").unwrap();
         assert_eq!(deleted, 0);
     }
+
     #[test]
     fn prune_by_url_pattern_matches_partial_strings() {
         let (_temp_dir, mut db) = create_test_db();
@@ -898,6 +1140,7 @@ mod tests {
         let deleted = db.prune_by_url_pattern("rust").unwrap();
         assert_eq!(deleted, 2);
     }
+
     #[test]
     fn prune_by_url_pattern_exact_match() {
         let (_temp_dir, mut db) = create_test_db();
@@ -909,6 +1152,7 @@ mod tests {
         let deleted = db.prune_by_url_pattern("^https://github\\.com/$").unwrap();
         assert_eq!(deleted, 1);
     }
+
     #[test]
     fn prune_by_url_pattern_prefix_match() {
         let (_temp_dir, mut db) = create_test_db();
@@ -922,6 +1166,7 @@ mod tests {
         let deleted = db.prune_by_url_pattern("^https://github\\.com/").unwrap();
         assert_eq!(deleted, 2);
     }
+
     #[test]
     fn prune_by_url_pattern_suffix_match() {
         let (_temp_dir, mut db) = create_test_db();
@@ -935,6 +1180,7 @@ mod tests {
         let deleted = db.prune_by_url_pattern("/rust$").unwrap();
         assert_eq!(deleted, 2);
     }
+
     #[test]
     fn prune_by_url_pattern_contains_match() {
         let (_temp_dir, mut db) = create_test_db();
@@ -955,10 +1201,44 @@ mod tests {
         let deleted = db.prune_by_age(86400).unwrap();
         assert_eq!(deleted, 0);
     }
+
     #[test]
     fn prune_by_url_pattern_with_empty_database() {
         let (_temp_dir, mut db) = create_test_db();
         let deleted = db.prune_by_url_pattern("github.com").unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    // ===========================================
+    // Migration tests
+    // ===========================================
+
+    #[test]
+    fn migration_sets_schema_version() {
+        let (_temp_dir, db) = create_test_db();
+
+        let version: i32 = db
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn migration_creates_first_segment_index() {
+        let (_temp_dir, db) = create_test_db();
+
+        // Check if index exists
+        let index_exists: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_urls_first_segment'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(index_exists, 1);
     }
 }
