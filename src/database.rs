@@ -237,21 +237,29 @@ fn get_last_segment(segments: &[String]) -> Option<String> {
     segments.last().cloned()
 }
 
+fn is_fuzzy_match(pattern: &str, text: &str) -> bool {
+    if pattern.len() < 3 {
+        pattern.eq_ignore_ascii_case(text)
+    } else {
+        text.to_lowercase().starts_with(&pattern.to_lowercase())
+    }
+}
+
 fn does_pattern_match_segments(url_segments: &[String], pattern: &[String]) -> bool {
     if pattern.is_empty() {
         return true;
     }
 
-    if let (Some(pattern_first), Some(url_first)) = (pattern.first(), url_segments.first())
-        && pattern_first != url_first
-    {
-        return false;
+    if let (Some(pattern_first), Some(url_first)) = (pattern.first(), url_segments.first()) {
+        if !is_fuzzy_match(pattern_first, url_first) {
+            return false;
+        }
     }
 
-    if let (Some(pattern_last), Some(url_last)) = (pattern.last(), url_segments.last())
-        && pattern_last != url_last
-    {
-        return false;
+    if let (Some(pattern_last), Some(url_last)) = (pattern.last(), url_segments.last()) {
+        if !is_fuzzy_match(pattern_last, url_last) {
+            return false;
+        }
     }
 
     let mut url_idx = 0;
