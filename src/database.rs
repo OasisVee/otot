@@ -311,6 +311,17 @@ fn get_last_segment(segments: &[String]) -> Option<String> {
     segments.last().cloned()
 }
 
+fn fuzzy_score_segment(matcher: &SkimMatcherV2, url_seg: &str, pattern_seg: &str) -> Option<i64> {
+    if pattern_seg.eq_ignore_ascii_case(url_seg) {
+        Some(100)
+    } else {
+        matcher
+            .fuzzy_match(url_seg, pattern_seg)
+            .filter(|&s| s >= MIN_FUZZY_SCORE)
+            .map(|s| s.min(99)) // Cap fuzzy scores below exact match bonus
+    }
+}
+
 const MIN_FUZZY_SCORE: i64 = 10;
 
 fn score_pattern_match(url_segments: &[String], pattern: &[String]) -> Option<i64> {
@@ -325,55 +336,23 @@ fn score_pattern_match(url_segments: &[String], pattern: &[String]) -> Option<i6
     let matcher = SkimMatcherV2::default();
     let mut total_score: i64 = 0;
 
-    if let (Some(pattern_first), Some(url_first)) = (pattern.first(), url_segments.first()) {
-        let first_score = if pattern_first.eq_ignore_ascii_case(url_first) {
-            100
-        } else {
-            matcher
-                .fuzzy_match(url_first, pattern_first)
-                .filter(|&s| s >= MIN_FUZZY_SCORE)?
-        };
-        total_score += first_score;
-    }
+    let first_score = fuzzy_score_segment(&matcher, url_segments.first()?, pattern.first()?)?;
+    total_score += first_score;
 
-    if let (Some(pattern_last), Some(url_last)) = (pattern.last(), url_segments.last()) {
-        let last_score = if pattern_last.eq_ignore_ascii_case(url_last) {
-            100
-        } else {
-            matcher
-                .fuzzy_match(url_last, pattern_last)
-                .filter(|&s| s >= MIN_FUZZY_SCORE)?
-        };
-
-        if pattern.len() > 1 {
-            total_score += last_score;
-        }
+    let last_score = fuzzy_score_segment(&matcher, url_segments.last()?, pattern.last()?)?;
+    if pattern.len() > 1 {
+        total_score += last_score;
     }
 
     let mut url_idx = 0;
     for pattern_seg in pattern {
         let found = url_segments[url_idx..]
             .iter()
-            .position(|url_seg| url_seg.eq_ignore_ascii_case(pattern_seg));
+            .position(|url_seg| fuzzy_score_segment(&matcher, url_seg, pattern_seg).is_some());
 
         match found {
-            Some(offset) => {
-                url_idx += offset + 1;
-            }
-            None => {
-                let fuzzy_found = url_segments[url_idx..].iter().position(|url_seg| {
-                    matcher
-                        .fuzzy_match(url_seg, pattern_seg)
-                        .is_some_and(|s| s >= MIN_FUZZY_SCORE)
-                });
-
-                match fuzzy_found {
-                    Some(offset) => {
-                        url_idx += offset + 1;
-                    }
-                    None => return None,
-                }
-            }
+            Some(offset) => url_idx += offset + 1,
+            None => return None,
         }
     }
 
@@ -620,6 +599,55 @@ mod tests {
         let url_segments: Vec<String> = vec![];
         let pattern = to_strings(&["github"]);
         assert!(!does_pattern_match_segments(&url_segments, &pattern));
+    }
+    #[test]
+    fn intermediate_segment_fuzzy_matches() {
+        let url_segments = to_strings(&["github.com", "rust-lang", "rust"]);
+        let pattern = to_strings(&["github.com", "rst-lang", "rust"]);
+        assert!(does_pattern_match_segments(&url_segments, &pattern));
+    }
+
+    #[test]
+    fn intermediate_segment_no_match_when_completely_different() {
+        let url_segments = to_strings(&["github.com", "rust-lang", "rust"]);
+        let pattern = to_strings(&["github.com", "microsoft", "rust"]);
+        assert!(!does_pattern_match_segments(&url_segments, &pattern));
+    }
+
+    #[test]
+    fn short_pattern_can_fuzzy_match() {
+        let url_segments = to_strings(&["github.com", "rust"]);
+        let pattern = to_strings(&["gh", "rust"]);
+        assert!(does_pattern_match_segments(&url_segments, &pattern));
+    }
+
+    #[test]
+    fn exact_match_scores_higher_than_fuzzy() {
+        let url_segments = to_strings(&["github.com", "rust"]);
+
+        let exact_score = score_pattern_match(&url_segments, &to_strings(&["github.com", "rust"]));
+        let fuzzy_score = score_pattern_match(&url_segments, &to_strings(&["gthub", "rust"]));
+
+        assert!(exact_score.unwrap() > fuzzy_score.unwrap());
+    }
+
+    // Database integration
+    #[test]
+    fn fuzzy_match_with_typo_in_intermediate_segment() {
+        let (_temp_dir, mut db) = create_test_db();
+
+        db.add_visit("https://github.com/rust-lang/rust", SystemTime::now())
+            .unwrap();
+
+        let matches = db
+            .fuzzy_match(&[
+                "github.com".to_string(),
+                "rst-lang".to_string(),
+                "rust".to_string(),
+            ])
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
     }
 
     // ===========================================
