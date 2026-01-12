@@ -40,9 +40,12 @@ The tool automatically opens the URL in your default browser.
 
 ### Fuzzy matching
 ```bash
+# exact match on URL segments
 otot open github/rust
+# or, fuzzy-match using shorthand
+otot open gh/rust
 ```
-This finds the most relevant URL containing both "github" and "rust" based on your visit history. The ranking uses a frecency algorithm that considers both frequency (how often you visit) and recency (when you last visited).
+This finds the most relevant URL in your visit history (not browser history) that matches on all segments of the provided pattern. The ranking uses a frecency algorithm that considers both frequency (how often you visit) and recency (when you last visited).
 
 #### Query the database
 ```bash
