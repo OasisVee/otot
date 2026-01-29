@@ -32,7 +32,7 @@ pub fn classify_input(address: &str) -> InputType {
         address
             .split('/')
             .filter(|s| !s.is_empty())
-            .map(|s| s.to_lowercase())
+            .map(|s| s.to_string())
             .collect(),
     )
 }
@@ -254,12 +254,12 @@ mod classify_input_tests {
         }
     }
     #[test]
-    fn fuzzy_pattern_normalizes_to_lowercase() {
+    fn fuzzy_pattern_preserves_case() {
         let result = classify_input("GitHub/Rust/Issues");
 
         match result {
             InputType::FuzzyPattern(segments) => {
-                assert_eq!(segments, vec!["github", "rust", "issues"]);
+                assert_eq!(segments, vec!["GitHub", "Rust", "Issues"]);
             }
             _ => panic!("Expected FuzzyPattern variant"),
         }

@@ -132,6 +132,8 @@ impl App {
                 anyhow::bail!("Queried a fully-qualified URL which would be opened directly.")
             }
             InputType::FuzzyPattern(segments) => {
+                let segments: Vec<String> =
+                    segments.into_iter().map(|s| s.to_lowercase()).collect();
                 let matches = db.fuzzy_match(&segments)?;
                 if !matches.is_empty() {
                     println!("{:<50} {:>8} {:>15}", "URL", "SCORE", "LAST VISITED");

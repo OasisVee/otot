@@ -45,16 +45,39 @@ pub fn open_address_impl(
             opener.open(url.as_str(), preferred_browser)?;
             Ok(())
         }
-        InputType::FuzzyPattern(segments) => match db.get_best_match(&segments)? {
-            Some(best_match) => {
-                db.add_visit(&best_match, SystemTime::now())?;
-                opener.open(best_match.as_str(), preferred_browser)?;
-                Ok(())
+        InputType::FuzzyPattern(segments) => {
+            let lowercase_segments: Vec<String> =
+                segments.iter().map(|s| s.to_lowercase()).collect();
+
+            match db.get_best_match(&lowercase_segments)? {
+                Some(best_match) => {
+                    db.add_visit(&best_match, SystemTime::now())?;
+                    opener.open(best_match.as_str(), preferred_browser)?;
+                    Ok(())
+                }
+                None => {
+                    // Fallback: check if the first segment is a valid alias/match
+                    // This allows "gh/my-repo" to work if "gh" matches "github.com"
+                    if segments.len() > 1 {
+                        let head = &lowercase_segments[0];
+                        if let Some(base_match) = db.get_best_match(&[head.clone()])? {
+                            let suffix = segments[1..].join("/");
+                            let new_url = if base_match.ends_with('/') {
+                                format!("{}{}", base_match, suffix)
+                            } else {
+                                format!("{}/{}", base_match, suffix)
+                            };
+
+                            db.add_visit(&new_url, SystemTime::now())?;
+                            opener.open(&new_url, preferred_browser)?;
+                            return Ok(());
+                        }
+                    }
+
+                    anyhow::bail!("No matching URL found in history");
+                }
             }
-            None => {
-                anyhow::bail!("No matching URL found in history");
-            }
-        },
+        }
     }
 }
 
@@ -210,6 +233,24 @@ mod tests {
         assert_eq!(
             *captured.borrow(),
             Some(("https://github.com/search?q=rust#results".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn fuzzy_pattern_with_appending_path_preserves_case() {
+        let (mock, captured) = create_mock();
+        let (_temp_dir, mut db) = create_temp_db();
+
+        // Add base URL to DB
+        db.add_visit("https://github.com", SystemTime::UNIX_EPOCH).unwrap();
+
+        // "gh" should fuzzy match "github.com"
+        // "OasisVee" should be appended
+        open_address_impl(&mock, &mut db, "gh/OasisVee", None).unwrap();
+
+        assert_eq!(
+            *captured.borrow(),
+            Some(("https://github.com/OasisVee".to_string(), None))
         );
     }
 }
