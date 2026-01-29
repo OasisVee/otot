@@ -1,3 +1,5 @@
+//! `otot` is a library for opening URLs with fuzzy matching and frecency-based search.
+
 mod browser;
 mod database;
 mod url_classify;
@@ -12,27 +14,37 @@ use clap::Subcommand;
 use log::info;
 use serde::{Deserialize, Serialize};
 
+/// Configuration for otot.
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct OtotConfig {
+    /// The command for the preferred browser to use.
     pub preferred_browser: Option<String>,
 }
 
+/// Actions for the configuration subcommand.
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
+    /// Set a configuration value.
     Set {
+        /// The configuration key to set.
         #[arg(short, long)]
         key: String,
 
+        /// The new value for the configuration key.
         #[arg(short, long)]
         new: String,
     },
+    /// Get a configuration value.
     Get {
+        /// The configuration key to get.
         #[arg(short, long)]
         key: String,
     },
+    /// Show the path to the configuration file.
     Path,
 }
 
+/// Handle a configuration action using the default configuration location.
 pub fn handle_config_action(action: ConfigAction) -> Result<()> {
     handle_config_action_with_config(action, None)
 }
@@ -121,6 +133,7 @@ pub fn handle_config_action_with_config(
     }
 }
 
+/// Format a timestamp as a relative time string (e.g., "5m ago").
 pub fn format_relative_time(timestamp_secs: i64) -> String {
     let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(timestamp_secs as u64);
     let elapsed = SystemTime::now()
@@ -138,6 +151,7 @@ pub fn format_relative_time(timestamp_secs: i64) -> String {
     }
 }
 
+/// Parse a duration string like "30d", "2w", "1m", "1y".
 pub fn parse_duration(s: &str) -> Result<Duration> {
     if s.is_empty() {
         anyhow::bail!("Duration cannot be empty");

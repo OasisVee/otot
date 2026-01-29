@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use otot::{
     BrowserOpener, ConfigAction, Database, InputType, OtotConfig, SqliteDatabase,
     SystemBrowserOpener, classify_input, format_relative_time, handle_config_action,
@@ -38,6 +38,18 @@ enum Command {
 
         #[arg(short, long)]
         url: Option<String>,
+    },
+    List,
+    Delete {
+        address: String,
+    },
+    Completions {
+        shell: clap_complete::Shell,
+    },
+    Export,
+    Import {
+        #[arg(short, long)]
+        file: std::path::PathBuf,
     },
 }
 
@@ -186,6 +198,69 @@ impl App {
         handle_config_action(action)
     }
 
+    fn handle_list(&mut self) -> Result<()> {
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
+        let urls = db.get_all_urls()?;
+
+        if urls.is_empty() {
+            println!("No URLs in history yet.");
+            return Ok(());
+        }
+
+        println!("{:<50} {:>8} {:>15}", "URL", "SCORE", "LAST VISITED");
+        println!("{}", "-".repeat(75));
+
+        for (url, score, last_accessed) in urls {
+            println!(
+                "{:<50} {:>8.1} {:>12}",
+                url,
+                score,
+                format_relative_time(last_accessed)
+            );
+        }
+
+        Ok(())
+    }
+
+    fn handle_delete(&mut self, address: &str) -> Result<()> {
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
+        let deleted = db.delete_url(address)?;
+        if deleted > 0 {
+            println!("Deleted URL: {}", address);
+        } else {
+            println!("URL not found in history: {}", address);
+        }
+
+        Ok(())
+    }
+
+    fn handle_export(&mut self) -> Result<()> {
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
+        let json = db.export_json()?;
+        println!("{}", json);
+        Ok(())
+    }
+
+    fn handle_import(&mut self, file: &std::path::Path) -> Result<()> {
+        let db = self.db.get_or_insert_with(|| {
+            Box::new(SqliteDatabase::open().expect("Failed to open database"))
+        });
+
+        let json = std::fs::read_to_string(file).context("Failed to read import file")?;
+        let count = db.import_json(&json)?;
+        println!("Imported {} URL(s) from {}", count, file.display());
+        Ok(())
+    }
+
     fn handle_prune(
         &mut self,
         older_than: Option<String>,
@@ -238,6 +313,14 @@ fn main() -> Result<()> {
         Command::Stats { size } => app.handle_stats(size)?,
         Command::Config { action } => app.handle_config(action)?,
         Command::Prune { older_than, url } => app.handle_prune(older_than, url)?,
+        Command::List => app.handle_list()?,
+        Command::Delete { address } => app.handle_delete(&address)?,
+        Command::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "otot", &mut std::io::stdout());
+        }
+        Command::Export => app.handle_export()?,
+        Command::Import { file } => app.handle_import(&file)?,
     }
 
     Ok(())
@@ -285,11 +368,27 @@ mod tests {
             Ok(vec![])
         }
 
+        fn get_all_urls(&self) -> Result<Vec<(String, f64, i64)>> {
+            Ok(vec![])
+        }
+
+        fn delete_url(&mut self, _url: &str) -> Result<usize> {
+            Ok(0)
+        }
+
         fn prune_by_age(&mut self, _older_than_secs: i64) -> Result<usize> {
             Ok(0)
         }
 
         fn prune_by_url_pattern(&mut self, _pattern: &str) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn export_json(&self) -> Result<String> {
+            Ok("[]".to_string())
+        }
+
+        fn import_json(&mut self, _json: &str) -> Result<usize> {
             Ok(0)
         }
     }

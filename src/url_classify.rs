@@ -165,7 +165,7 @@ mod classify_input_tests {
             _ => panic!("Expected FullUrl variant"),
         }
     }
-    // Rule 3: Localhost with Port (Known to fail with current implementation)
+    // Rule 3: Localhost with Port
     #[test]
     fn localhost_with_port_should_be_full_url() {
         let result = classify_input("localhost:8080");
@@ -177,7 +177,7 @@ mod classify_input_tests {
                 assert_eq!(url.port(), Some(8080));
             }
             _ => {
-                panic!("Expected FullUrl variant, but current implementation returns FuzzyPattern")
+                panic!("Expected FullUrl variant")
             }
         }
     }
@@ -193,7 +193,7 @@ mod classify_input_tests {
                 assert_eq!(url.path(), "/api");
             }
             _ => {
-                panic!("Expected FullUrl variant, but current implementation returns FuzzyPattern")
+                panic!("Expected FullUrl variant")
             }
         }
     }

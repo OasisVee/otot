@@ -242,7 +242,8 @@ mod tests {
         let (_temp_dir, mut db) = create_temp_db();
 
         // Add base URL to DB
-        db.add_visit("https://github.com", SystemTime::UNIX_EPOCH).unwrap();
+        db.add_visit("https://github.com", SystemTime::UNIX_EPOCH)
+            .unwrap();
 
         // "gh" should fuzzy match "github.com"
         // "OasisVee" should be appended

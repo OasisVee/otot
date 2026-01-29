@@ -3,6 +3,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use log::{debug, info};
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use url::Url;
@@ -12,8 +13,12 @@ pub trait Database {
     fn fuzzy_match(&self, pattern: &[String]) -> Result<Vec<(String, f64, i64)>>;
     fn get_best_match(&self, pattern: &[String]) -> Result<Option<String>>;
     fn get_highest_usage_urls(&self, size: u16) -> Result<Vec<(String, f64, i64)>>;
+    fn get_all_urls(&self) -> Result<Vec<(String, f64, i64)>>;
+    fn delete_url(&mut self, url: &str) -> Result<usize>;
     fn prune_by_age(&mut self, older_than_secs: i64) -> Result<usize>;
     fn prune_by_url_pattern(&mut self, pattern: &str) -> Result<usize>;
+    fn export_json(&self) -> Result<String>;
+    fn import_json(&mut self, json: &str) -> Result<usize>;
 }
 
 pub struct SqliteDatabase {
@@ -246,6 +251,32 @@ impl Database for SqliteDatabase {
             .context("Failed to collect highest usage URLs")
     }
 
+    fn get_all_urls(&self) -> Result<Vec<(String, f64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT full_url, score, last_accessed
+                 FROM urls
+                 ORDER BY full_url ASC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?, // full_url
+                row.get::<_, f64>(1)?,    // score
+                row.get::<_, i64>(2)?,    // last_accessed
+            ))
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to collect all URLs")
+    }
+
+    fn delete_url(&mut self, url: &str) -> Result<usize> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM urls WHERE full_url = ?1", [url])?;
+        Ok(deleted)
+    }
+
     fn prune_by_age(&mut self, older_than_secs: i64) -> Result<usize> {
         let cutoff_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -269,6 +300,58 @@ impl Database for SqliteDatabase {
 
         Ok(deleted)
     }
+
+    fn export_json(&self) -> Result<String> {
+        let urls = self.get_all_urls()?;
+        let entries: Vec<HistoryEntry> = urls
+            .into_iter()
+            .map(|(full_url, score, last_accessed)| HistoryEntry {
+                full_url,
+                score,
+                last_accessed,
+            })
+            .collect();
+        serde_json::to_string_pretty(&entries).context("Failed to serialize history to JSON")
+    }
+
+    fn import_json(&mut self, json: &str) -> Result<usize> {
+        let entries: Vec<HistoryEntry> =
+            serde_json::from_str(json).context("Failed to deserialize history from JSON")?;
+
+        let mut count = 0;
+        for entry in entries {
+            let segments = extract_segments(&entry.full_url)?;
+            let first_segment = get_first_segment(&segments).unwrap_or_default();
+            let last_segment = get_last_segment(&segments).unwrap_or_default();
+            let segments_json = serde_json::to_string(&segments)?;
+
+            self.conn.execute(
+                "INSERT INTO urls (full_url, segments, first_segment, last_segment, score, last_accessed)
+                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                      ON CONFLICT(full_url) DO UPDATE SET
+                          score = MAX(score, excluded.score),
+                          last_accessed = MAX(last_accessed, excluded.last_accessed)",
+                params![
+                    entry.full_url,
+                    segments_json,
+                    first_segment,
+                    last_segment,
+                    entry.score,
+                    entry.last_accessed
+                ],
+            )?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct HistoryEntry {
+    full_url: String,
+    score: f64,
+    last_accessed: i64,
 }
 
 fn convert_pattern_to_like(pattern: &str) -> Result<String> {
@@ -374,17 +457,15 @@ fn calculate_frecency(score: f64, last_accessed: i64) -> f64 {
         .unwrap()
         .as_secs() as i64;
 
-    let seconds_ago = now - last_accessed;
+    let seconds_ago = (now - last_accessed).max(0);
 
-    let multiplier = if seconds_ago < 3600 {
-        4.0
-    } else if seconds_ago < 86400 {
-        2.0
-    } else if seconds_ago < 604800 {
-        0.5
-    } else {
-        0.25
-    };
+    // Exponential decay with a half-life of 2 days (172800 seconds)
+    // Starting with a 4x boost for instantaneous visits.
+    // 0s ago -> 4.0
+    // 2 days ago -> 2.0
+    // 4 days ago -> 1.0
+    let half_life = 172800.0;
+    let multiplier = 4.0 * (0.5f64).powf(seconds_ago as f64 / half_life);
 
     score * multiplier
 }
